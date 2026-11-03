@@ -2,7 +2,7 @@
 """Local web viewer for Claude Code session traces.
 
 Reads the JSONL transcripts Claude Code writes under ~/.claude/projects and serves
-a browser UI on 127.0.0.1. Standard library only; runs on Python 3.9+.
+a browser UI on 127.0.0.1. Standard library only; requires Python 3.14+.
 
     python3 server.py [--port 8765] [--root ~/.claude/projects]
 """
@@ -44,14 +44,34 @@ def parse_ts(s: Any) -> Optional[float]:
         return None
 
 
-def iter_jsonl(path: Path):
-    """Yield parsed records, skipping lines that don't parse (e.g. a partial write at EOF)."""
+def iter_jsonl_at(path: Path):
+    """Yield (byte offset, record), skipping lines that don't parse (e.g. a partial write at EOF)."""
     with path.open("rb") as f:
+        off = 0
         for line in f:
             try:
-                yield json.loads(line)
+                yield off, json.loads(line)
+            except ValueError:
+                pass
+            off += len(line)
+
+
+def iter_jsonl(path: Path):
+    for _, d in iter_jsonl_at(path):
+        yield d
+
+
+def read_records_at(path: Path, offsets: List[int]) -> List[Any]:
+    """Re-read the JSONL records that start at the given byte offsets."""
+    out = []
+    with path.open("rb") as f:
+        for off in offsets:
+            f.seek(off)
+            try:
+                out.append(json.loads(f.readline()))
             except ValueError:
                 continue
+    return out
 
 
 REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
@@ -132,10 +152,19 @@ def short_project(cwd: str) -> str:
 # ---------------------------------------------------------------- parsing
 
 class Clipper:
-    """Clips long strings for the inline payload and keeps the full text for /api/full."""
+    """Clips long strings for the inline payload and keeps the full text for /api/full.
+
+    Also records which JSONL lines (byte offsets) each displayed item came from, for /api/raw."""
 
     def __init__(self) -> None:
         self.full: Dict[str, str] = {}
+        self.raw: Dict[str, List[int]] = {}
+
+    def link(self, item: Dict[str, Any], key: str, off: int) -> None:
+        item["raw"] = key
+        offs = self.raw.setdefault(key, [])
+        if off not in offs:
+            offs.append(off)
 
     def __call__(self, key: str, text: str) -> Dict[str, Any]:
         if len(text) <= CLIP:
@@ -163,7 +192,7 @@ def load_subagent_links(session_dir: Path) -> Dict[str, Dict[str, Any]]:
     return links
 
 
-def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Clipper]:
     clip = Clipper()
     info: Dict[str, Any] = {"title": None, "agentName": None, "cwd": None, "gitBranch": None,
                             "version": None, "cost": None, "prs": [], "models": []}
@@ -172,9 +201,12 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
     tools: Dict[str, Dict[str, Any]] = {}
     state = {"last_input": None, "last_call_end": None, "n_calls": 0}
 
-    def turn(kind: str, ts: Optional[float], raw: str, images: int, key: str) -> Dict[str, Any]:
+    def turn(kind: str, ts: Optional[float], raw: str, images: int, key: str,
+             off: Optional[int] = None) -> Dict[str, Any]:
         t = {"key": key, "kind": kind, "ts": ts, "preview": clean_prompt(raw)[:300],
              "prompt": clip("prompt:" + key, raw), "images": images, "items": []}
+        if off is not None:
+            clip.link(t, "turn:" + key, off)
         turns.append(t)
         return t
 
@@ -183,11 +215,12 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
             return turn("start", ts, "", 0, "start")
         return turns[-1]
 
-    def meta_item(ts: Optional[float], label: str, text: str, key: str) -> None:
-        current(ts)["items"].append({"type": "meta", "ts": ts, "label": label,
-                                     "text": clip("meta:" + key, text)})
+    def meta_item(ts: Optional[float], label: str, text: str, key: str, off: int) -> None:
+        item = {"type": "meta", "ts": ts, "label": label, "text": clip("meta:" + key, text)}
+        clip.link(item, "meta:" + key, off)
+        current(ts)["items"].append(item)
 
-    for d in iter_jsonl(path):
+    for off, d in iter_jsonl_at(path):
         typ = d.get("type")
         ts = parse_ts(d.get("timestamp"))
         if info["cwd"] is None and d.get("cwd"):
@@ -209,6 +242,7 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
                     if tool is None:
                         continue
                     out, _ = content_text(b.get("content"))
+                    clip.link(tool, "tool:" + tool["id"], off)
                     tool["resultTs"] = ts
                     tool["isError"] = bool(b.get("is_error"))
                     tool["output"] = clip("out:" + tool["id"], out)
@@ -229,15 +263,16 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
             origin = (d.get("origin") or {}).get("kind")
             key = d.get("uuid") or str(len(turns))
             if d.get("isCompactSummary"):
-                current(ts)["items"].append({"type": "compact", "ts": ts,
-                                             "text": clip("meta:" + key, text)})
+                item = {"type": "compact", "ts": ts, "text": clip("meta:" + key, text)}
+                clip.link(item, "meta:" + key, off)
+                current(ts)["items"].append(item)
             elif origin == "human" or origin == "task-notification" or (
                     origin is None and not d.get("isMeta") and not text.startswith("[Request interrupted")):
-                turn("task" if origin == "task-notification" else "human", ts, text, images, key)
+                turn("task" if origin == "task-notification" else "human", ts, text, images, key, off)
             elif text.startswith("[Request interrupted"):
-                meta_item(ts, "interrupted", text, key)
+                meta_item(ts, "interrupted", text, key, off)
             else:
-                meta_item(ts, origin or "context", text, key)
+                meta_item(ts, origin or "context", text, key, off)
             if ts is not None:
                 state["last_input"] = ts
 
@@ -256,6 +291,7 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
                 current(ts)["items"].append(call)
                 if call["model"] and call["model"] not in info["models"] and call["model"] != "<synthetic>":
                     info["models"].append(call["model"])
+            clip.link(call, "call:" + mid, off)
             call["end"] = ts if ts is not None else call["end"]
             call["stopReason"] = msg.get("stop_reason") or call["stopReason"]
             if msg.get("usage"):
@@ -279,12 +315,14 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
                             "summary": tool_summary(name, inp)[:300],
                             "input": {k: clip("in:%s:%s" % (tid, k), to_text(v)) for k, v in inp.items()},
                             "resultTs": None, "durationMs": None, "isError": False, "output": None}
+                    clip.link(tool, "tool:" + tid, off)
                     if tid in subagent_links:
                         tool["subagent"] = subagent_links[tid]
                     tools[tid] = tool
                     call["tools"].append(tool)
                 elif (bt or "").endswith("_tool_result") and b.get("tool_use_id") in tools:
                     tool = tools[b["tool_use_id"]]
+                    clip.link(tool, "tool:" + tool["id"], off)
                     tool["resultTs"] = ts
                     tool["output"] = clip("out:" + tool["id"], to_text(b.get("content")))
                     if tool["start"] is not None and ts is not None:
@@ -296,9 +334,11 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
             sub = d.get("subtype")
             key = d.get("uuid") or str(ts)
             if sub == "compact_boundary":
-                current(ts)["items"].append({"type": "compact", "ts": ts, "text": {"t": "Context compacted"}})
+                item = {"type": "compact", "ts": ts, "text": {"t": "Context compacted"}}
+                clip.link(item, "meta:" + key, off)
+                current(ts)["items"].append(item)
             elif sub in ("local_command", "informational", "api_error") or d.get("level") == "error":
-                meta_item(ts, sub or "system", to_text(d.get("content") or d.get("error") or ""), key)
+                meta_item(ts, sub or "system", to_text(d.get("content") or d.get("error") or ""), key, off)
 
         elif typ == "custom-title":
             info["title"] = d.get("customTitle") or info["title"]
@@ -312,7 +352,7 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
             info["prs"].append(d["prUrl"])
 
     info["turns"] = turns
-    return info, clip.full
+    return info, clip
 
 
 # ---------------------------------------------------------------- session index
@@ -407,10 +447,10 @@ class SessionCache:
 
     def __init__(self, capacity: int = 8) -> None:
         self.capacity = capacity
-        self.items: "OrderedDict[str, Tuple[Tuple[float, int], Dict[str, Any], Dict[str, str]]]" = OrderedDict()
+        self.items: "OrderedDict[str, Tuple[Tuple[float, int], Dict[str, Any], Clipper]]" = OrderedDict()
         self.lock = threading.Lock()
 
-    def get(self, path: Path, session_dir: Path) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    def get(self, path: Path, session_dir: Path) -> Tuple[Dict[str, Any], Clipper]:
         st = path.stat()
         sig = (st.st_mtime, st.st_size)
         with self.lock:
@@ -418,14 +458,14 @@ class SessionCache:
             if hit and hit[0] == sig:
                 self.items.move_to_end(str(path))
                 return hit[1], hit[2]
-        data, full = parse_session(path, load_subagent_links(session_dir))
+        data, store = parse_session(path, load_subagent_links(session_dir))
         data["mtime"] = st.st_mtime * 1000
         data["size"] = st.st_size
         with self.lock:
-            self.items[str(path)] = (sig, data, full)
+            self.items[str(path)] = (sig, data, store)
             while len(self.items) > self.capacity:
                 self.items.popitem(last=False)
-        return data, full
+        return data, store
 
 
 INDEX = Index()
@@ -512,12 +552,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"mtime": st.st_mtime * 1000, "size": st.st_size})
             elif url.path == "/api/full":
                 path, session_dir = resolve(q)
-                _, full = SESSIONS.get(path, session_dir)
+                _, store = SESSIONS.get(path, session_dir)
                 key = (q.get("k") or [""])[0]
-                if key not in full:
+                if key not in store.full:
                     self.send_json({"error": "not found"}, 404)
                 else:
-                    self.send_json({"t": full[key]})
+                    self.send_json({"t": store.full[key]})
+            elif url.path == "/api/raw":
+                path, session_dir = resolve(q)
+                _, store = SESSIONS.get(path, session_dir)
+                key = (q.get("k") or [""])[0]
+                if key not in store.raw:
+                    self.send_json({"error": "not found"}, 404)
+                else:
+                    self.send_json({"records": read_records_at(path, store.raw[key])})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except ValueError:

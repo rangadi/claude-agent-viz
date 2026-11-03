@@ -39,7 +39,7 @@ function collapsible(cls, key, rowKids, build) {
   const set = (open) => {
     wrap.classList.toggle('open', open);
     body.replaceChildren();
-    if (open) { body.append(...[].concat(build())); wrap.append(body); } else body.remove();
+    if (open) { body.append(...[build()].flat(Infinity).filter((x) => x != null)); wrap.append(body); } else body.remove();
   };
   row.addEventListener('click', () => {
     const open = !state.open.has(key);
@@ -127,6 +127,50 @@ function clipped(c, ids, cls) {
     } catch (err) { more.textContent = 'failed: ' + err.message; }
   });
   return h('div', {}, pre, more);
+}
+
+// ------------------------------------------------------------ raw JSON
+
+const JSON_TOKEN = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+const HIGHLIGHT_LIMIT = 400000; // chars; larger records render as plain text to keep the page responsive
+
+// Pretty-printed, syntax-coloured JSON built from text nodes and spans.
+function jsonView(value) {
+  const text = JSON.stringify(value, null, 2);
+  const pre = h('pre', { class: 'block json' });
+  if (text.length > HIGHLIGHT_LIMIT) { pre.textContent = text; return pre; }
+  let last = 0;
+  for (const m of text.matchAll(JSON_TOKEN)) {
+    if (m.index > last) pre.append(text.slice(last, m.index));
+    const cls = m[1] ? (m[2] ? 'j-key' : 'j-str') : m[3] ? 'j-lit' : 'j-num';
+    pre.append(h('span', { class: cls }, m[1] || m[0]));
+    if (m[2]) pre.append(m[2]);
+    last = m.index + m[0].length;
+  }
+  pre.append(text.slice(last));
+  return pre;
+}
+
+// Collapsible panel showing the transcript records an item was built from.
+function rawPanel(ids, key) {
+  if (!key) return null;
+  return collapsible('tool raw', `raw:${ids.s}:${ids.a || ''}:${key}`,
+    [h('span', { class: 'tname' }, '{ } Raw JSON'), h('span', { class: 'grow muted small' }, 'transcript records, as stored')],
+    () => {
+      const box = h('div', { class: 'muted small' }, 'loading…');
+      api('raw', { ...ids, k: key }).then(({ records }) => {
+        const copy = h('button', { class: 'small' }, 'Copy');
+        copy.addEventListener('click', async () => {
+          await navigator.clipboard.writeText(records.map((r) => JSON.stringify(r, null, 2)).join('\n'));
+          copy.textContent = 'Copied';
+        });
+        box.className = '';
+        box.replaceChildren(h('div', { class: 'raw-head' },
+          h('span', { class: 'muted small' }, `${records.length} record${records.length === 1 ? '' : 's'}`), copy),
+        ...records.map((r) => [h('div', { class: 'label' }, `${r.type || 'record'}${r.uuid ? ' · ' + r.uuid : ''}${r.timestamp ? ' · ' + r.timestamp : ''}`), jsonView(r)]).flat());
+      }).catch((e) => { box.textContent = 'Failed to load: ' + e.message; });
+      return box;
+    });
 }
 
 // ------------------------------------------------------------ router
@@ -339,6 +383,7 @@ function turnCard(ids, turn, sum, i) {
       parts.push(collapsible('tool', `prompt:${ids.s}:${turn.key}`,
         [h('span', { class: 'tname' }, 'Prompt'), h('span', { class: 'grow muted' }, `${(turn.prompt.n || turn.prompt.t.length).toLocaleString()} chars${turn.images ? `, ${turn.images} image(s)` : ''} — raw text as sent`)],
         () => clipped(turn.prompt, ids)));
+      parts.push(rawPanel(ids, turn.raw));
     }
     parts.push(timeline(sum), h('div', { class: 'legend' },
       `model ${fmtMs(sum.modelMs)} · tools ${fmtMs(sum.toolMs)} · ${fmtTok(sum.tok.cacheRead)} cache-read · ${fmtTok(sum.tok.cacheWrite)} cache-write · ${fmtTok(sum.tok.input)} input · ${fmtTok(sum.tok.output)} output`));
@@ -366,7 +411,7 @@ function metaRow(ids, it) {
   const preview = (it.text.t || '').replace(/\s+/g, ' ').slice(0, 160);
   return collapsible('meta' + (it.type === 'compact' ? ' compact' : ''), `meta:${ids.s}:${it.ts}:${label}`,
     [h('span', { class: 'time' }, fmtTime(it.ts)), h('span', { class: 'badge' }, label), h('span', { class: 'grow' }, preview)],
-    () => clipped(it.text, ids));
+    () => [clipped(it.text, ids), rawPanel(ids, it.raw)]);
 }
 
 function callCard(ids, c) {
@@ -414,6 +459,7 @@ function callCard(ids, c) {
       out.push(h('div', { class: 'label' }, `tool calls (${c.tools.length})`));
       out.push(...c.tools.map((t) => toolCard(ids, t)));
     }
+    out.push(rawPanel(ids, c.raw));
     return out;
   });
 }
@@ -447,6 +493,7 @@ function toolCard(ids, t) {
     out.push(h('div', { class: 'label' }, t.isError ? 'output (error)' : 'output'));
     out.push(t.output ? clipped(t.output, ids) : h('div', { class: 'muted small' }, 'No result recorded.'));
     out.push(h('div', { class: 'small muted', style: 'margin-top:6px' }, `id ${t.id} · started ${fmtTime(t.start)}${t.resultTs ? ' · finished ' + fmtTime(t.resultTs) : ''}`));
+    out.push(rawPanel(ids, t.raw));
     return out;
   });
 }

@@ -9,9 +9,9 @@ uv run server.py             # http://127.0.0.1:8765
 uv run server.py --port 9000 --root /path/to/projects
 ```
 
-It has no dependencies beyond the Python 3.9+ standard library, so `python3 server.py`
-works too. The server binds to `127.0.0.1`
-only, because transcripts contain prompts, file paths and command output.
+Requires Python 3.14+. It uses only the standard library, so any Python 3.14
+interpreter can also run `server.py` directly. The server binds to `127.0.0.1` only,
+because transcripts contain prompts, file paths and command output.
 
 ## What you see
 
@@ -25,6 +25,10 @@ only, because transcripts contain prompts, file paths and command output.
   stop reason and the tools it called. Expand a row for the token breakdown, assistant
   text, and each tool call's arguments and output.
 - **Subagents**: an `Agent` tool call links to the subagent's own trace.
+- **Raw JSON**: every prompt, round trip, tool call and meta row has a "Raw JSON" panel
+  with the transcript records it was built from, pretty-printed. For a round trip that
+  is each record sharing its `message.id`. For a tool call it is the `tool_use` record
+  and the `tool_result` record.
 
 Live refresh re-polls the open transcript every 2.5 seconds and keeps your expanded rows open.
 
