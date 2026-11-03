@@ -88,6 +88,37 @@ function fmtAgo(ms) {
 function toolName(n) {
   return n.startsWith('mcp__') ? n.slice(5).replace(/__/, ' · ') : n;
 }
+
+// Tools whose first argument is a subcommand worth showing ("git push", "uv run").
+const SUBCOMMAND_TOOLS = new Set(['git', 'gh', 'uv', 'npm', 'pnpm', 'yarn', 'docker', 'kubectl', 'cargo', 'go', 'brew', 'pip', 'aws', 'gcloud', 'make', 'terraform', 'poetry']);
+const COMMAND_WRAPPERS = new Set(['sudo', 'env', 'time', 'nohup', 'exec', 'command', 'xargs']);
+
+// The program a shell command line runs, e.g. "cd repo && FOO=1 /usr/bin/git push -f" → "git push".
+function bashCommand(cmd) {
+  if (!cmd) return '';
+  // Separators get their own tokens; subshell/group openers are dropped.
+  const words = cmd.replace(/^\s*#.*$/gm, '').replace(/(&&|\|\||;)/g, ' $1 ').split(/\s+/)
+    .map((w) => w.replace(/^(\$\(|[({])+/, '')).filter(Boolean);
+  // Skip a leading `cd DIR`, variable assignments, wrappers like sudo/env, and separators.
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i];
+    if (w === 'cd' && i + 1 < words.length && !/^(&&|\|\||;)$/.test(words[i + 1])) i += 2;
+    else if (/^(&&|\|\||;)$/.test(w) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || COMMAND_WRAPPERS.has(w)) i++;
+    else break;
+  }
+  if (i >= words.length) return words[0] === 'cd' ? 'cd' : '';
+  const prog = words[i].replace(/^["']|["'|&)]+$/g, '').split('/').pop();
+  const sub = (prog === 'git' && words[i + 1] === '-C' ? words[i + 3] : words[i + 1]) || '';
+  return SUBCOMMAND_TOOLS.has(prog) && /^[a-z][\w-]*$/.test(sub) ? `${prog} ${sub}` : prog;
+}
+
+// Tool label for headers and chips; Bash calls include the program they run.
+function toolLabel(t) {
+  const name = toolName(t.name);
+  const cmd = t.name === 'Bash' && t.input.command ? bashCommand(t.input.command.t) : '';
+  return cmd ? `${name}: ${cmd}` : name;
+}
 function shortModel(m) {
   return (m || '?').replace(/^claude-/, '').replace(/-\d{8}$/, '');
 }
@@ -403,7 +434,7 @@ function timeline(sum) {
   };
   return h('div', { class: 'tl' },
     sum.calls.map((c) => pos(c.start, c.end, 'm', `#${c.n} ${shortModel(c.model)} ${fmtMs(c.end - c.start)}`)),
-    sum.tools.map((t) => pos(t.start, t.resultTs, 't', `${toolName(t.name)} ${fmtMs(t.durationMs)}`)));
+    sum.tools.map((t) => pos(t.start, t.resultTs, 't', `${toolLabel(t)} ${fmtMs(t.durationMs)}`)));
 }
 
 function metaRow(ids, it) {
@@ -425,7 +456,7 @@ function callCard(ids, c) {
     h('span', { class: 'badge model' }, shortModel(c.model)),
     c.error ? h('span', { class: 'badge err' }, 'API error') : null,
     h('span', { class: 'grow' },
-      c.tools.length ? h('span', { class: 'chips' }, c.tools.map((t) => h('span', { class: 'chip' + (t.isError ? ' err' : '') }, toolName(t.name) + (t.durationMs != null ? ' ' + fmtMs(t.durationMs) : ''))))
+      c.tools.length ? h('span', { class: 'chips' }, c.tools.map((t) => h('span', { class: 'chip' + (t.isError ? ' err' : '') }, toolLabel(t) + (t.durationMs != null ? ' ' + fmtMs(t.durationMs) : ''))))
         : h('span', { class: 'muted' }, firstText)),
     h('span', { class: 'right' },
       errs ? h('span', { class: 'status-err' }, `${errs} failed`) : null,
@@ -469,7 +500,7 @@ function toolCard(ids, t) {
     : t.isError ? h('span', { class: 'status-err' }, '✗') : h('span', { class: 'status-ok' }, '✓');
   const row = [
     status,
-    h('span', { class: 'tname', title: t.name }, toolName(t.name)),
+    h('span', { class: 'tname', title: t.name }, toolLabel(t)),
     t.server ? h('span', { class: 'badge' }, 'server') : null,
     t.subagent ? h('span', { class: 'badge task' }, 'subagent') : null,
     h('span', { class: 'grow mono muted' }, t.summary),
