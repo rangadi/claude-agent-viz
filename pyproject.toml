@@ -1,0 +1,10 @@
+[project]
+name = "agent-traffic"
+version = "0.1.0"
+description = "Local web viewer for Claude Code session traces"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.uv]
+package = false
