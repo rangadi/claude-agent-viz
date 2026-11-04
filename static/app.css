@@ -111,3 +111,9 @@ pre.json { max-height: 640px; }
 @media (prefers-color-scheme: dark) {
   .j-key { color: #91a7ff; } .j-str { color: #8ce99a; } .j-num { color: #faa2c1; } .j-lit { color: #ffa94d; }
 }
+
+/* context panel */
+.tool.ctx { border-color: var(--model); }
+.ctx-kinds { display: grid; grid-template-columns: max-content minmax(120px, 1fr) max-content; gap: 4px 10px; align-items: center; max-width: 640px; }
+.ctx-bar { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; }
+.ctx-bar > div { height: 100%; background: var(--model); }

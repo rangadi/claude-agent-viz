@@ -204,6 +204,85 @@ function rawPanel(ids, key) {
     });
 }
 
+// ------------------------------------------------------------ context
+
+const estTok = (chars) => Math.round(chars / 4);
+
+// The message history sent with one API call, rebuilt server-side on first open.
+function contextPanel(ids, c, u) {
+  const actual = u.input + u.cacheRead + u.cacheWrite;
+  return collapsible('tool ctx', `ctx:${ids.s}:${ids.a || ''}:${c.id}`,
+    [h('span', { class: 'tname' }, 'Context'), h('span', { class: 'grow muted small' }, `message history sent with this call · ${fmtTok(actual)} tokens`)],
+    () => {
+      const box = h('div', { class: 'muted small' }, 'rebuilding history…');
+      api('context', { ...ids, k: c.raw }).then((ctx) => box.replaceWith(contextView(ids, c, ctx, actual)))
+        .catch((e) => { box.textContent = 'Failed to load: ' + e.message; });
+      return box;
+    });
+}
+
+function contextView(ids, c, ctx, actual) {
+  const entries = ctx.entries.map((e, i) => ({ ...e, i }));
+  const visible = entries.reduce((a, e) => a + e.chars, 0);
+  const byKind = {};
+  for (const e of entries) {
+    const k = byKind[e.kind] || (byKind[e.kind] = { chars: 0, n: 0 });
+    k.chars += e.chars; k.n++;
+  }
+  const kinds = Object.entries(byKind).sort((a, b) => b[1].chars - a[1].chars);
+  const wrap = h('div', { class: 'ctx-view' });
+
+  const b = ctx.compactBoundary;
+  wrap.append(h('div', { class: 'small' },
+    `${entries.length} entries from ${ctx.records} records`,
+    ctx.skipped ? h('span', { class: 'muted' }, ` (${ctx.skipped} bookkeeping records not sent)`) : null,
+    ` · visible text ≈ ${fmtTok(estTok(visible))} tokens of ${fmtTok(actual)} actual`),
+  h('div', { class: 'small muted' },
+    'Estimates are chars ÷ 4. The rest of the actual total is the system prompt and tool definitions (not stored in transcripts), redacted thinking, and estimate error.'),
+  b ? h('div', { class: 'meta compact' }, `Starts at a compaction (${b.trigger || 'auto'}): ${fmtTok(b.preTokens)} → ${fmtTok(b.postTokens)} tokens. Earlier history was replaced by the summary.`) : null);
+
+  wrap.append(h('div', { class: 'label' }, 'by kind'),
+    h('div', { class: 'ctx-kinds' }, kinds.map(([k, v]) => [
+      h('span', { class: 'badge' }, k),
+      h('div', { class: 'ctx-bar' }, h('div', { style: `width:${visible ? (v.chars / visible) * 100 : 0}%` })),
+      h('span', { class: 'small muted' }, `≈${fmtTok(estTok(v.chars))} · ${v.n} · ${visible ? Math.round((v.chars / visible) * 100) : 0}%`),
+    ])));
+
+  const sortSel = h('select', {},
+    h('option', { value: 'desc', selected: state.order === 'desc' }, 'Newest first'),
+    h('option', { value: 'asc', selected: state.order === 'asc' }, 'Oldest first'),
+    h('option', { value: 'size' }, 'Largest first'));
+  const kindSel = h('select', {}, h('option', { value: '' }, 'All kinds'), kinds.map(([k]) => h('option', { value: k }, k)));
+  const list = h('div', {});
+  const draw = () => {
+    let rows = entries.filter((e) => !kindSel.value || e.kind === kindSel.value);
+    if (sortSel.value === 'size') rows = [...rows].sort((a, b) => b.chars - a.chars);
+    else if (sortSel.value === 'desc') rows = [...rows].reverse();
+    list.replaceChildren(...rows.map((e) => contextEntry(ids, c, e, visible)));
+  };
+  sortSel.addEventListener('change', draw);
+  kindSel.addEventListener('change', draw);
+  wrap.append(h('div', { class: 'toolbar', style: 'margin:10px 0 4px' }, sortSel, kindSel), list);
+  draw();
+  return wrap;
+}
+
+function contextEntry(ids, c, e, visible) {
+  const label = e.kind === 'tool call' || e.kind === 'tool result' ? toolName(e.label) : e.label;
+  const preview = (e.text.t || '').replace(/\s+/g, ' ').slice(0, 140);
+  const row = [
+    h('span', { class: 'time' }, fmtTime(e.ts)),
+    h('span', { class: 'badge' + (e.kind === 'prompt' ? ' model' : '') }, e.kind),
+    h('span', { class: 'tname small' }, label),
+    h('span', { class: 'grow muted small' }, preview || (e.kind === 'thinking' ? 'content not stored' : '')),
+    h('span', { class: 'right' },
+      e.images ? h('span', {}, `${e.images} image${e.images > 1 ? 's' : ''}`) : null,
+      h('span', { title: `${e.chars.toLocaleString()} chars` }, '≈' + fmtTok(estTok(e.chars))),
+      h('span', {}, visible ? (e.chars / visible * 100).toFixed(1) + '%' : '')),
+  ];
+  return collapsible('tool', `ctxe:${c.id}:${e.i}`, row, () => [clipped(e.text, ids), rawPanel(ids, e.raw)]);
+}
+
 // ------------------------------------------------------------ router
 
 function route() {
@@ -490,6 +569,7 @@ function callCard(ids, c) {
       out.push(h('div', { class: 'label' }, `tool calls (${c.tools.length})`));
       out.push(...c.tools.map((t) => toolCard(ids, t)));
     }
+    out.push(contextPanel(ids, c, u));
     out.push(rawPanel(ids, c.raw));
     return out;
   });

@@ -152,13 +152,17 @@ def short_project(cwd: str) -> str:
 # ---------------------------------------------------------------- parsing
 
 class Clipper:
-    """Clips long strings for the inline payload and keeps the full text for /api/full.
+    """Per-session side store, filled while parsing.
 
-    Also records which JSONL lines (byte offsets) each displayed item came from, for /api/raw."""
+    - Clips long strings for the inline payload and keeps the full text for /api/full.
+    - Records which JSONL lines (byte offsets) each displayed item came from, for /api/raw.
+    - Indexes every record's offset and parentUuid, so /api/context can walk a call's history."""
 
     def __init__(self) -> None:
         self.full: Dict[str, str] = {}
         self.raw: Dict[str, List[int]] = {}
+        self.records: Dict[str, Tuple[int, Optional[str]]] = {}  # uuid -> (offset, parentUuid)
+        self.ctx_start: Dict[str, Optional[str]] = {}  # "call:<message id>" -> parentUuid of its first record
 
     def link(self, item: Dict[str, Any], key: str, off: int) -> None:
         item["raw"] = key
@@ -171,6 +175,106 @@ class Clipper:
             return {"t": text}
         self.full[key] = text
         return {"t": text[:CLIP], "n": len(text), "k": key}
+
+
+CTX_CLIP = 1500  # inline chars per context entry; the rest goes through /api/full
+
+
+def context_entries(d: Dict[str, Any], tool_names: Dict[str, str]) -> List[Dict[str, Any]]:
+    """What one transcript record contributes to the model's context. Empty if it isn't sent.
+
+    Attachments without `rendered` text (bookkeeping such as deferred-tool records) and
+    system records (hook summaries, local command logs) are not part of the request."""
+    typ = d.get("type")
+    out: List[Dict[str, Any]] = []
+
+    def add(kind: str, label: str, text: str, images: int = 0) -> None:
+        out.append({"kind": kind, "label": label, "text": text, "images": images})
+
+    if typ == "attachment":
+        r = d.get("rendered")
+        if r:
+            parts = r if isinstance(r, list) else [r]
+            text = "\n".join(to_text(x.get("content") if isinstance(x, dict) else x) for x in parts)
+            add("injected context", (d.get("attachment") or {}).get("type") or "attachment", text)
+    elif typ == "user":
+        content = (d.get("message") or {}).get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+            for b in blocks:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_result":
+                    text, images = content_text(b.get("content"))
+                    add("tool result", tool_names.get(b.get("tool_use_id"), "tool"), text, images)
+                else:
+                    text, images = content_text([b])
+                    add("user", "text", text, images)
+        else:
+            text, images = content_text(content)
+            origin = (d.get("origin") or {}).get("kind")
+            if d.get("isCompactSummary"):
+                add("compact summary", "summary", text, images)
+            elif origin == "human" or (origin is None and not d.get("isMeta")):
+                add("prompt", "human", text, images)
+            else:
+                add("user meta", origin or "meta", text, images)
+    elif typ == "assistant":
+        for b in (d.get("message") or {}).get("content") or []:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                add("assistant", "text", b.get("text") or "")
+            elif bt in ("tool_use", "server_tool_use"):
+                add("tool call", b.get("name") or "?", to_text(b.get("input") or {}))
+            elif bt in ("thinking", "redacted_thinking"):
+                add("thinking", "redacted" if not b.get("thinking") else "text", b.get("thinking") or "")
+            elif (bt or "").endswith("_tool_result"):
+                add("tool result", tool_names.get(b.get("tool_use_id"), "server tool"), to_text(b.get("content")))
+    return out
+
+
+def build_context(path: Path, store: "Clipper", key: str) -> Optional[Dict[str, Any]]:
+    """Reconstruct the message history sent with one API call by walking parentUuid links.
+
+    The walk ends at the session start or at a compaction boundary, whose summary
+    replaces everything before it."""
+    if key not in store.ctx_start:
+        return None
+    chain: List[int] = []
+    seen = set()
+    u = store.ctx_start[key]
+    while u and u not in seen and u in store.records:
+        seen.add(u)
+        off, u = store.records[u]
+        chain.append(off)
+    records = read_records_at(path, list(reversed(chain)))
+    tool_names = {b.get("id"): b.get("name") for d in records if d.get("type") == "assistant"
+                  for b in (d.get("message") or {}).get("content") or []
+                  if isinstance(b, dict) and b.get("type") in ("tool_use", "server_tool_use")}
+    boundary = None
+    if records and records[0].get("type") == "system" and records[0].get("subtype") == "compact_boundary":
+        boundary = records[0].get("compactMetadata") or {}
+    entries = []
+    skipped = 0
+    for d in records:
+        es = context_entries(d, tool_names)
+        if not es and d.get("type") in ("attachment", "system"):
+            skipped += 1
+        for j, e in enumerate(es):
+            text = e.pop("text")
+            ck = "ctx:%s:%d" % (d.get("uuid"), j)
+            e.update({"uuid": d.get("uuid"), "ts": parse_ts(d.get("timestamp")), "chars": len(text),
+                      "raw": "rec:%s" % d.get("uuid")})
+            if len(text) > CTX_CLIP:
+                store.full[ck] = text
+                e["text"] = {"t": text[:CTX_CLIP], "n": len(text), "k": ck}
+            else:
+                e["text"] = {"t": text}
+            entries.append(e)
+    return {"entries": entries, "records": len(records), "skipped": skipped,
+            "compactBoundary": boundary}
 
 
 def load_subagent_links(session_dir: Path) -> Dict[str, Dict[str, Any]]:
@@ -221,6 +325,9 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
         current(ts)["items"].append(item)
 
     for off, d in iter_jsonl_at(path):
+        if d.get("uuid"):
+            clip.records[d["uuid"]] = (off, d.get("parentUuid"))
+            clip.raw["rec:" + d["uuid"]] = [off]
         typ = d.get("type")
         ts = parse_ts(d.get("timestamp"))
         if info["cwd"] is None and d.get("cwd"):
@@ -288,6 +395,7 @@ def parse_session(path: Path, subagent_links: Dict[str, Dict[str, Any]]) -> Tupl
                         "firstTs": ts, "end": ts, "stopReason": None, "usage": None,
                         "texts": [], "thinking": 0, "tools": [], "error": bool(d.get("isApiErrorMessage"))}
                 calls[mid] = call
+                clip.ctx_start["call:" + mid] = d.get("parentUuid")
                 current(ts)["items"].append(call)
                 if call["model"] and call["model"] not in info["models"] and call["model"] != "<synthetic>":
                     info["models"].append(call["model"])
@@ -558,6 +666,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "not found"}, 404)
                 else:
                     self.send_json({"t": store.full[key]})
+            elif url.path == "/api/context":
+                path, session_dir = resolve(q)
+                _, store = SESSIONS.get(path, session_dir)
+                ctx = build_context(path, store, (q.get("k") or [""])[0])
+                if ctx is None:
+                    self.send_json({"error": "not found"}, 404)
+                else:
+                    self.send_json(ctx)
             elif url.path == "/api/raw":
                 path, session_dir = resolve(q)
                 _, store = SESSIONS.get(path, session_dir)

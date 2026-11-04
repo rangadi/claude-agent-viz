@@ -25,6 +25,10 @@ because transcripts contain prompts, file paths and command output.
   stop reason and the tools it called. Expand a row for the token breakdown, assistant
   text, and each tool call's arguments and output.
 - **Subagents**: an `Agent` tool call links to the subagent's own trace.
+- **Context**: each round trip has a "Context" panel that rebuilds the message history
+  sent with that call when you open it. It shows a breakdown by kind (tool results,
+  injected reminders, assistant text and so on) and each entry with an approximate token
+  size, sortable by size. See [Reconstructed context](#reconstructed-context).
 - **Raw JSON**: every prompt, round trip, tool call and meta row has a "Raw JSON" panel
   with the transcript records it was built from, pretty-printed. For a round trip that
   is each record sharing its `message.id`. For a tool call it is the `tool_use` record
@@ -44,6 +48,18 @@ numbers are reconstructed:
   last block. "First block" is when the first content block was written, which is later
   than time-to-first-token.
 - **Tool duration** runs from the `tool_use` block to its `tool_result` record.
+
+## Reconstructed context
+
+Each record links to the previous one through `parentUuid`. The context for a call is
+the chain from its first record back to the session start, or back to a compaction
+boundary, where the summary replaces earlier history. Injected `<system-reminder>`
+blocks come from each attachment record's `rendered` field. Attachments without that
+field, and system records, are not sent to the model and are left out.
+
+The transcript does not store the system prompt, the tool definitions, or thinking
+text, so the visible entries add up to less than the call's actual input tokens (the
+exact total from `usage`). Per-entry sizes are estimates, at 4 characters per token.
 
 ## Layout
 
