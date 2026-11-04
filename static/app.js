@@ -347,7 +347,7 @@ function renderList() {
 }
 
 function sessionRow(s) {
-  const live = Date.now() - s.mtime < 120000;
+  const live = Date.now() - s.lastActivity < 120000;
   const title = s.title || s.firstPrompt || s.session;
   return h('a', { class: 'srow', href: `#/s/${encodeURIComponent(s.project)}/${encodeURIComponent(s.session)}` },
     h('div', { style: 'min-width:0' },
@@ -355,7 +355,7 @@ function sessionRow(s) {
       h('div', { class: 'prompt' }, s.lastPrompt && s.lastPrompt !== s.firstPrompt ? 'Last: ' + s.lastPrompt : (s.title ? s.firstPrompt : '') || '')),
     h('div', { class: 'where' }, h('div', {}, s.cwdShort), h('div', {}, s.gitBranch || ''),
       s.subagents ? h('div', {}, `${s.subagents} subagent${s.subagents > 1 ? 's' : ''}`) : null),
-    h('div', { class: 'when' }, h('div', {}, fmtAgo(s.mtime)), h('div', {}, fmtBytes(s.size))));
+    h('div', { class: 'when' }, h('div', { title: 'last recorded activity' }, fmtAgo(s.lastActivity)), h('div', {}, fmtBytes(s.size))));
 }
 
 // ------------------------------------------------------------ session view

@@ -494,7 +494,7 @@ class Index:
                 with self.lock:
                     self.cache[str(f)] = (sig, meta)
                 out.append(meta)
-        out.sort(key=lambda m: m["mtime"], reverse=True)
+        out.sort(key=lambda m: m["lastActivity"], reverse=True)
         return out
 
     @staticmethod
@@ -528,7 +528,7 @@ class Index:
                     break
             fh.seek(max(0, st.st_size - TAIL_SCAN_BYTES))
             tail = fh.read().splitlines()
-        title = agent_name = summary = None
+        title = agent_name = summary = last_ts = None
         for line in tail:
             try:
                 d = json.loads(line)
@@ -545,7 +545,11 @@ class Index:
                 meta["lastPrompt"] = clean_prompt(d["lastPrompt"])[:300]
             if d.get("gitBranch"):
                 meta["gitBranch"] = d["gitBranch"]
+            last_ts = parse_ts(d.get("timestamp")) or last_ts
         meta["title"] = title or agent_name or summary
+        # Claude Code can append untimestamped bookkeeping records (last-prompt, cost-state)
+        # to old transcripts, so file mtime overstates recent activity.
+        meta["lastActivity"] = last_ts or meta["start"] or meta["mtime"]
         meta["cwdShort"] = short_project(meta["cwd"]) if meta["cwd"] else f.parent.name
         return meta
 
