@@ -7,6 +7,7 @@ const crumbs = document.getElementById('crumbs');
 
 const state = {
   open: new Set(),          // keys of expanded collapsibles; survives live re-renders
+  rawText: new Set(),       // keys of markdown blocks switched to raw text
   order: localStorage.getItem('order') || 'desc',
   live: localStorage.getItem('live') !== 'off',
   listFilter: '',
@@ -158,6 +159,40 @@ function clipped(c, ids, cls) {
     } catch (err) { more.textContent = 'failed: ' + err.message; }
   });
   return h('div', {}, pre, more);
+}
+
+// Clipped text rendered as markdown, with a per-block switch to the raw text.
+// `key` identifies the block across live re-renders.
+function mdText(c, ids, key) {
+  let text = c.t;
+  const view = h('div');
+  const toggle = h('a', { href: '#', class: 'more' });
+  const paint = () => {
+    const raw = state.rawText.has(key);
+    view.replaceChildren(raw ? h('pre', { class: 'block text-block' }, text) : renderMarkdown(text));
+    toggle.textContent = raw ? 'rendered' : 'raw text';
+  };
+  toggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.rawText.has(key) ? state.rawText.delete(key) : state.rawText.add(key);
+    paint();
+  });
+  const foot = h('div', { class: 'md-foot' }, toggle);
+  if (c.k) {
+    const more = h('a', { href: '#', class: 'more' }, `show all (${fmtBytes(c.n)})`);
+    more.addEventListener('click', async (e) => {
+      e.preventDefault();
+      more.textContent = 'loading…';
+      try {
+        text = (await api('full', { ...ids, k: c.k })).t;
+        more.remove();
+        paint();
+      } catch (err) { more.textContent = 'failed: ' + err.message; }
+    });
+    foot.prepend(more);
+  }
+  paint();
+  return h('div', {}, view, foot);
 }
 
 // ------------------------------------------------------------ raw JSON
@@ -491,8 +526,8 @@ function turnCard(ids, turn, sum, i) {
     const parts = [];
     if (turn.kind !== 'start') {
       parts.push(collapsible('tool', `prompt:${ids.s}:${turn.key}`,
-        [h('span', { class: 'tname' }, 'Prompt'), h('span', { class: 'grow muted' }, `${(turn.prompt.n || turn.prompt.t.length).toLocaleString()} chars${turn.images ? `, ${turn.images} image(s)` : ''} — raw text as sent`)],
-        () => clipped(turn.prompt, ids)));
+        [h('span', { class: 'tname' }, 'Prompt'), h('span', { class: 'grow muted' }, `${(turn.prompt.n || turn.prompt.t.length).toLocaleString()} chars${turn.images ? `, ${turn.images} image(s)` : ''} — as sent`)],
+        () => mdText(turn.prompt, ids, `md:prompt:${ids.s}:${ids.a || ''}:${turn.key}`)));
       parts.push(rawPanel(ids, turn.raw));
     }
     parts.push(timeline(sum), h('div', { class: 'legend' },
@@ -563,7 +598,7 @@ function callCard(ids, c) {
     }
     if (c.texts.length) {
       out.push(h('div', { class: 'label' }, 'assistant text'));
-      out.push(...c.texts.map((t) => clipped(t, ids, 'block text-block')));
+      out.push(...c.texts.map((t, i) => mdText(t, ids, `md:${c.id}:${i}`)));
     }
     if (c.tools.length) {
       out.push(h('div', { class: 'label' }, `tool calls (${c.tools.length})`));

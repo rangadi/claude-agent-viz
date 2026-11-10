@@ -94,6 +94,30 @@ pre.block { margin: 0; padding: 8px 10px; background: var(--code); border: 1px s
 .kv > .k { color: var(--muted); font-size: 12px; padding-top: 8px; }
 .more { margin-top: 4px; font-size: 12px; }
 
+.md { margin: 6px 0; padding: 2px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel);
+      max-height: 640px; overflow: auto; line-height: 1.5; word-break: break-word; }
+.md > :first-child { margin-top: 8px; } .md > :last-child { margin-bottom: 8px; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md .md-table { margin: 8px 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 14px 0 6px; line-height: 1.25; }
+.md h1 { font-size: 19px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15px; } .md h4, .md h5, .md h6 { font-size: 14px; }
+.md ul, .md ol { padding-left: 24px; }
+.md li > p { margin: 4px 0; }
+.md ul.tight li > p, .md ol.tight li > p { margin: 0; }
+.md li > ul, .md li > ol { margin: 2px 0; }
+.md ul:has(> li > .md-task) { list-style: none; padding-left: 8px; }
+.md li:has(> .md-task) > p { display: inline; }
+.md code { padding: 1px 4px; border-radius: 3px; background: var(--chip); font-size: 12px; }
+.md pre.md-code { padding: 8px 10px; background: var(--code); border: 1px solid var(--line); border-radius: 5px; overflow: auto; }
+.md pre.md-code code { padding: 0; background: none; }
+.md blockquote { padding: 0 10px; border-left: 3px solid var(--line); color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.md .md-table { overflow-x: auto; }
+.md table { border-collapse: collapse; font-size: 13px; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; vertical-align: top; }
+.md th { background: var(--chip); text-align: left; }
+.md .md-link { text-decoration: underline dotted; text-underline-offset: 2px; }
+.md-foot { display: flex; gap: 12px; }
+
 .tl { position: relative; height: 18px; background: var(--chip); border-radius: 4px; margin: 6px 0 10px; overflow: hidden; }
 .tl > div { position: absolute; height: 8px; min-width: 2px; border-radius: 2px; }
 .tl .m { top: 1px; background: var(--model); }

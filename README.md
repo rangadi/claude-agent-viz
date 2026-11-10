@@ -24,6 +24,8 @@ because transcripts contain prompts, file paths and command output.
 - **Round trips**: one row per API response, with model, latency, input/output tokens,
   stop reason and the tools it called. Expand a row for the token breakdown, assistant
   text, and each tool call's arguments and output.
+- **Markdown**: prompts and assistant text render as markdown. A "raw text" link under
+  each block switches it to the exact characters. Tool output and thinking stay plain.
 - **Subagents**: an `Agent` tool call links to the subagent's own trace.
 - **Context**: each round trip has a "Context" panel that rebuilds the message history
   sent with that call when you open it. It shows a breakdown by kind (tool results,
@@ -66,6 +68,8 @@ exact total from `usage`). Per-entry sizes are estimates, at 4 characters per to
 - `server.py`: transcript parsing, session index (cached by file mtime and size), JSON API.
 - `static/`: the single-page UI, in plain JS. All transcript content is inserted with
   `textContent`. Keep it that way, because prompts and tool output contain arbitrary markup.
+  `static/markdown.js` follows the same rule: it builds DOM nodes, links only http(s) and
+  mailto targets, and shows images as links without loading them.
 
 Text fields longer than 4,000 characters are clipped in the session payload. The UI
 fetches the full value from `/api/full` when you click "show all".
